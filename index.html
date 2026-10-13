@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>74LS76 Trainer Kit Simulator</title>
+<style>
+:root{--bg:#e6ebf3;--gr:#d3dbe8;--cd:#f4f6fb;--tx:#14213d;--ac:#0b5c8a;--hl:#d4e3f4;--mu:#5d6b86;box-sizing:border-box;color-scheme:light}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0f141e;--gr:#192131;--cd:#1b2331;--tx:#e6ecf7;--ac:#6cc4ee;--hl:#2b3b54;--mu:#93a1bd;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#0f141e;--gr:#192131;--cd:#1b2331;--tx:#e6ecf7;--ac:#6cc4ee;--hl:#2b3b54;--mu:#93a1bd;color-scheme:dark}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--tx);font:15px system-ui,-apple-system,"Segoe UI",sans-serif;overflow:hidden}
+#cv{position:absolute;inset:0;overflow:auto;padding:110px 24px 100px 112px;background-image:linear-gradient(var(--gr) 1px,transparent 1px),linear-gradient(90deg,var(--gr) 1px,transparent 1px);background-size:20px 20px}
+#kit{display:block;user-select:none;touch-action:manipulation}
+.cd{position:fixed;background:var(--cd);border-radius:14px;box-shadow:0 2px 14px #0002;display:flex;align-items:center;gap:10px;z-index:5}
+#top{left:12px;top:calc(12px + env(safe-area-inset-top,0px));padding:8px 14px}
+#top i{width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,#0ba3da,#6366f1)}
+#ttl{font-size:1.2rem;font-weight:600;outline:0;min-width:110px}
+#acct{right:12px;top:calc(12px + env(safe-area-inset-top,0px));padding:8px 14px}
+#tools{left:12px;top:calc(96px + env(safe-area-inset-top,0px));flex-direction:column;padding:10px;gap:6px}
+#hist{left:12px;bottom:calc(60px + env(safe-area-inset-bottom,0px));flex-direction:column;padding:10px;gap:6px}
+.b{border:0;background:transparent;color:var(--ac);width:46px;height:46px;border-radius:10px;font-size:1.35rem;cursor:pointer}
+.b.on{background:var(--hl)}.b:hover{background:var(--hl)}
+.pill{border:1px solid var(--ac);background:transparent;color:var(--ac);border-radius:9px;padding:7px 12px;font:inherit;cursor:pointer}
+.pill:hover{background:var(--hl)}
+#zoom{right:12px;bottom:calc(12px + env(safe-area-inset-bottom,0px));padding:6px 10px}
+#zoom .b{width:34px;height:34px}
+#hint{left:60px;bottom:calc(12px + env(safe-area-inset-bottom,0px));padding:8px 14px;color:var(--mu);font-size:.85rem;max-width:calc(100vw - 230px)}
+#warn{left:490px;right:130px;top:calc(8px + env(safe-area-inset-top,0px));flex-direction:column;align-items:flex-start;gap:2px;max-height:94px;overflow:auto;padding:8px 14px;font-size:.78rem;line-height:1.3;display:none}
+@media(max-width:1000px){#warn{left:100px;right:12px;top:calc(70px + env(safe-area-inset-top,0px));max-height:80px}}
+.sep{width:30px;height:1px;background:var(--mu);opacity:.4}
+@media(max-width:700px){#hint{display:none}#acct span{display:none}}
+</style>
+</head>
+<body>
+<div id="cv"><svg id="kit" viewBox="0 0 1440 700"></svg></div>
+<div class="cd" id="top"><i></i><span id="ttl" contenteditable spellcheck="false">New Circuit</span><button class="pill" id="demo">Demo: 2-bit counter</button><button class="pill" id="reset">Reset</button></div>
+<div class="cd" id="acct"><span>Guest</span></div>
+<div class="cd" id="warn" role="status" aria-live="polite"></div>
+<div class="cd" id="tools">
+<button class="b on" data-tool="select" title="Select / wire">↖</button>
+<button class="b" data-tool="hand" title="Pan">✋</button>
+<div class="sep"></div>
+<button class="b" data-tool="ic" title="Insert / remove 74LS76 (click a base)">▣</button>
+<button class="b" data-tool="del" title="Delete wire (click it)">🗑</button>
+<div class="sep"></div>
+<button class="b" id="clr" title="Remove all wires">⚡</button>
+</div>
+<div class="cd" id="hist"><button class="b" id="undo" title="Undo">↶</button><button class="b" id="redo" title="Redo">↷</button></div>
+<div class="cd" id="zoom"><button class="b" id="zm">−</button><span id="zl" style="min-width:48px;text-align:center">75%</span><button class="b" id="zp">+</button></div>
+<div class="cd" id="hint">Click a pin, then another pin to add a wire. Right-click a wire to delete it. Wire VCC and GND to each IC (pins 5 and 13); tie PRE/CLR (and J/K) HIGH or LOW. Pin colours: green = HIGH, grey = LOW, black = floating, orange = unknown/conflict. Clock edge = HIGH→LOW.</div>
+
+<script id="engine">
+/* =====================================================================
+   74LS76 TRAINER ENGINE  (DOM-free, unit-testable)
+   Signal levels: LOW=0  HIGH=1  FLT=2 (floating/undriven)  UNK=3 (unknown / conflict)
+   ===================================================================== */
+const SIG={LOW:0,HIGH:1,FLT:2,UNK:3};
+/* SN74LS76A / HD74LS76A (16-pin DIP, verified against manufacturer datasheets):
+   FF1: 1CLK 1, 1PRE 2, 1CLR 3, 1J 4, 1Q̄ 14, 1Q 15, 1K 16     FF2: 2CLK 6, 2PRE 7, 2CLR 8, 2J 9, 2Q̄ 10, 2Q 11, 2K 12
+   VCC pin 5, GND pin 13.  Negative-edge triggered (active edge = HIGH→LOW). PRE/CLR active LOW. */
+const PINNAME={1:'1CLK',2:'1PRE',3:'1CLR',4:'1J',5:'VCC',6:'2CLK',7:'2PRE',8:'2CLR',9:'2J',10:'2Q̄',11:'2Q',12:'2K',13:'GND',14:'1Q̄',15:'1Q',16:'1K'};
+const FP=[{clk:1,pre:2,clr:3,j:4,k:16,q:15,qb:14},{clk:6,pre:7,clr:8,j:9,k:12,q:11,qb:10}];
+/* clock half-periods in 50 ms simulation ticks: 10 Hz=1, 5 Hz=2, 1 Hz=10, 0.5 Hz=20 */
+const CLKHP={k10:1,k5:2,k1:10,k05:20};
+const CLKNAME={k10:'10 Hz clock',k5:'5 Hz clock',k1:'1 Hz clock',k05:'0.5 Hz clock'};
+const HEXSEG=['abcdef','bc','abdeg','abcdg','bcfg','acdfg','acdefg','abc','abcdefg','abcdfg','abcefg','cdefg','adef','bcdeg','adefg','aefg'];
+const pinId=(n,p)=>`c${n}p${p}`;
+/* Direct hexadecimal segment decoder used by the display modules (NOT a BCD IC). vs=[D,C,B,A] levels. */
+function decodeHex(vs){
+  if(vs.every(v=>v===SIG.FLT))return{mode:'blank',seg:''};
+  if(vs.some(v=>v>SIG.HIGH))return{mode:'undef',seg:'g'};
+  return{mode:'ok',seg:HEXSEG[vs.reduce((s,v)=>s*2+v,0)]};
+}
+/* Demo: 2-bit asynchronous binary UP counter. 1Hz -> FF1 CLK; FF1 Q -> FF2 CLK (negative-edge devices). */
+function demoConfig(){
+  const w=[],a=(x,y)=>w.push([x,y]);
+  a('vcc','c0p5');a('gnd','c0p13');
+  [4,16,2,3,9,12,7,8].forEach(p=>a('hi','c0p'+p));          // J=K=1, PRE=CLR=HIGH (inactive) for both FFs
+  a('k1','c0p1');a('c0p15','c0p6');a('c0p15','o0');a('c0p11','o1');
+  return{w,i:[1,1,1,1,1],s:Array(16).fill(0)};
+}
+function createEngine(){
+  const {LOW:L,HIGH:H,FLT:Z,UNK:X}=SIG,NIC=5,TICK=0.05,MAXDT=0.5;
+  const ids=[];for(let i=0;i<16;i++)ids.push('i'+i,'o'+i);
+  ids.push('vcc','gnd','hi','lo','pulse',...Object.keys(CLKHP));
+  for(let d=0;d<2;d++)for(const l of 'abcd')ids.push('d'+d+l);
+  for(let n=0;n<NIC;n++)for(let p=1;p<=16;p++)ids.push(pinId(n,p));
+  const idSet=new Set(ids),newFF=()=>({q:0,pc:Z,inv:0,au:0});
+  let wires=[];const ic=Array(NIC).fill(1),sw=Array(16).fill(0);
+  let power=1,pulse=0,tc=0,acc=0;const clv={k10:1,k5:1,k1:1,k05:1};
+  const ff=Array.from({length:NIC},()=>[newFF(),newFF()]);
+  let root={},wired=new Set(),pwOK=Array(NIC).fill(false),nv={},conflicts=[],unstable=false,diag=[],bad=Array(NIC).fill(0);
+  const enabled=n=>!!(power&&ic[n]&&pwOK[n]);
+  const rd=(v,id)=>{const x=v[root[id]];return x===undefined?Z:x};
+  /* --- net building: union-find over wires --- */
+  function rebuild(){
+    const p={};const f=x=>{while(p[x]!==x){p[x]=p[p[x]];x=p[x]}return x};
+    ids.forEach(i=>p[i]=i);wired=new Set();
+    wires.forEach(([a,b])=>{wired.add(a);wired.add(b);p[f(a)]=f(b)});
+    root={};ids.forEach(i=>root[i]=f(i));
+    const short=root.vcc===root.gnd;
+    for(let n=0;n<NIC;n++)pwOK[n]=!short&&root[pinId(n,5)]===root.vcc&&root[pinId(n,13)]===root.gnd;
+  }
+  /* --- signal resolution: one value per net, conflicts are UNKNOWN (never AND-ed) --- */
+  function evalNets(){
+    const d={};
+    const add=(id,v)=>{const r=root[id],o=d[r]||(d[r]={h:0,l:0,x:0,who:[]});if(v===H)o.h=1;else if(v===L)o.l=1;else o.x=1;o.who.push([id,v])};
+    if(power){
+      add('vcc',H);add('gnd',L);add('hi',H);add('lo',L);add('pulse',pulse?H:L);
+      sw.forEach((v,i)=>add('i'+i,v?H:L));for(const k in CLKHP)add(k,clv[k]);
+      for(let n=0;n<NIC;n++)if(enabled(n))for(let k=0;k<2;k++){
+        const f=FP[k],s=ff[n][k];let qv,qb;
+        if(s.inv)qv=qb=H;                          // PRE=CLR=LOW: Q and Q̄ both HIGH (non-stable)
+        else if(s.au)qv=qb=X;                      // async input floating/unknown: outputs unknown
+        else if(s.q===X)qv=qb=X;
+        else{qv=s.q;qb=1-s.q}
+        add(pinId(n,f.q),qv);add(pinId(n,f.qb),qb);
+      }
+    }
+    const out={};conflicts=[];
+    for(const r in d){const o=d[r];if(o.h&&o.l){out[r]=X;conflicts.push(o.who)}else if(o.x)out[r]=X;else out[r]=o.h?H:L}
+    return out;
+  }
+  const nextQ=(q,j,k)=>{if(j>H||k>H)return X;if(j&&k)return q===X?X:1-q;if(j)return 1;if(k)return 0;return q};
+  /* One flip-flop step against a snapshot of the nets. Returns true if state changed. */
+  function stepFF(n,k,v){
+    const f=FP[k],s=ff[n][k];
+    if(!enabled(n)){s.q=0;s.pc=Z;s.inv=0;s.au=0;return false}
+    const pre=rd(v,pinId(n,f.pre)),clr=rd(v,pinId(n,f.clr)),c=rd(v,pinId(n,f.clk));
+    const oq=s.q,oi=s.inv,oa=s.au;
+    s.au=(pre>H||clr>H)?1:0;
+    if(s.au)s.inv=0;
+    else if(pre===L&&clr===L){s.inv=1;s.q=X}
+    else{
+      s.inv=0;
+      if(pre===L)s.q=1;
+      else if(clr===L)s.q=0;
+      else if(s.pc===H&&c===L)s.q=nextQ(s.q,rd(v,pinId(n,f.j)),rd(v,pinId(n,f.k)));   // active edge: HIGH→LOW only
+    }
+    s.pc=c;
+    return oq!==s.q||oi!==s.inv||oa!==s.au;
+  }
+  /* Delta-cycle settle: all FFs sample the same snapshot, then outputs update, repeat until stable. */
+  function settle(){
+    let it=0,ch;
+    do{nv=evalNets();ch=false;for(let n=0;n<NIC;n++)for(let k=0;k<2;k++)if(stepFF(n,k,nv))ch=true;it++}while(ch&&it<64);
+    unstable=ch;nv=evalNets();diagnose();
+  }
+  /* After wiring/IC/power edits: adopt current clock levels WITHOUT generating an edge, then settle. */
+  function resync(){
+    rebuild();const v=evalNets();
+    for(let n=0;n<NIC;n++)for(let k=0;k<2;k++)ff[n][k].pc=enabled(n)?rd(v,pinId(n,FP[k].clk)):Z;
+    settle();
+  }
+  /* --- diagnostics --- */
+  const lv=v=>['LOW','HIGH','FLOATING','UNKNOWN'][v];
+  function nameOf(id){
+    if(id==='vcc')return'VCC rail';if(id==='gnd')return'GND rail';if(id==='hi')return'HIGH source';if(id==='lo')return'LOW source';
+    if(id==='pulse')return'PULSE';if(id in CLKNAME)return CLKNAME[id];
+    let m=/^i(\d+)$/.exec(id);if(m)return'input switch '+m[1];
+    m=/^c(\d)p(\d+)$/.exec(id);if(m)return`IC${+m[1]+1} pin ${m[2]} (${PINNAME[m[2]]})`;
+    return id;
+  }
+  function diagnose(){
+    const D=[],B=Array(NIC).fill(0),short=root.vcc===root.gnd;
+    if(!power)D.push({sev:'info',msg:'Power is OFF: all signals are undefined and every IC is unpowered. Press the ⏻ button.'});
+    else{
+      if(short)D.push({sev:'err',msg:'Short circuit: VCC and GND are wired together. No IC can be powered.'});
+      conflicts.forEach(w=>{
+        const ids_=w.map(x=>x[0]);if(short&&ids_.includes('vcc')&&ids_.includes('gnd'))return;
+        D.push({sev:'err',msg:'Signal conflict: HIGH and LOW are driven onto the same net ('+w.slice(0,4).map(([id,v])=>nameOf(id)+'='+lv(v)).join(', ')+(w.length>4?', …':'')+').'});
+      });
+    }
+    for(let n=0;n<NIC;n++){
+      const tag=`IC${n+1}`;
+      if(!Array.from({length:16},(_,i)=>pinId(n,i+1)).some(p=>wired.has(p)))continue;
+      if(!ic[n]){D.push({sev:'info',msg:`${tag} base is empty: wired pins are floating (insert the IC with the ▣ tool).`});continue}
+      if(!power)continue;
+      if(!pwOK[n]){
+        B[n]=1;
+        if(!short){
+          if(root[pinId(n,5)]!==root.vcc)D.push({sev:'err',msg:`${tag}: VCC (pin 5) is not wired to the VCC rail. IC is unpowered, outputs disabled.`});
+          if(root[pinId(n,13)]!==root.gnd)D.push({sev:'err',msg:`${tag}: GND (pin 13) is not wired to the GND rail. IC is unpowered, outputs disabled.`});
+        }
+        continue;
+      }
+      for(let k=0;k<2;k++){
+        const f=FP[k],s=ff[n][k],t2=`${tag} FF${k+1}`;
+        if(![f.clk,f.pre,f.clr,f.j,f.k,f.q,f.qb].some(p=>wired.has(pinId(n,p))))continue;
+        if(s.inv){B[n]=1;D.push({sev:'err',msg:`${t2}: INVALID, PRE and CLR are both LOW. Q and Q̄ are both HIGH (non-stable); the state after release is unpredictable.`})}
+        [['pre','PRE','tie it to HIGH when unused'],['clr','CLR','tie it to HIGH when unused'],['j','J','tie it to HIGH or LOW'],['k','K','tie it to HIGH or LOW'],['clk','CLK','no clock edges can occur']].forEach(([key,lab,hint])=>{
+          const v=rd(nv,pinId(n,f[key]));
+          if(v===Z)D.push({sev:'warn',msg:`${t2}: ${lab} (pin ${f[key]}) is floating, ${hint}.`});
+          else if(v===X)D.push({sev:'warn',msg:`${t2}: ${lab} (pin ${f[key]}) is UNKNOWN/conflicting.`});
+        });
+        if(!s.inv&&!s.au&&s.q===X)D.push({sev:'warn',msg:`${t2}: state is UNKNOWN. Pulse CLR or PRE LOW then HIGH (or clock with J≠K) to initialise it.`});
+      }
+    }
+    if(unstable)D.push({sev:'err',msg:'Feedback loop did not settle (oscillation). Evaluation was stopped after 64 passes.'});
+    const rank={err:0,warn:1,info:2};
+    diag=D.filter((x,i)=>D.findIndex(y=>y.msg===x.msg)===i).sort((a,b)=>rank[a.sev]-rank[b.sev]);
+    bad=B;
+  }
+  /* --- clock generator: fixed 50 ms simulation ticks, independent of rendering frame rate --- */
+  function resetClock(){tc=0;acc=0;for(const k in clv)clv[k]=1}
+  function tick(){tc++;for(const k in CLKHP)if(tc%CLKHP[k]===0){clv[k]^=1;settle()}}   // each toggle is its own event
+  function advance(dt){
+    if(!power||!(dt>0))return 0;
+    acc+=Math.min(dt,MAXDT);let n=0;
+    while(acc>=TICK-1e-9){acc-=TICK;tick();n++}
+    if(acc<0)acc=0;return n;
+  }
+  const validWire=(a,b)=>a!==b&&idSet.has(a)&&idSet.has(b);
+  const hasWire=(a,b)=>wires.some(([x,y])=>x===a&&y===b||x===b&&y===a);
+  const E={
+    SIG,ids,
+    advance,tick(n=1){for(let i=0;i<n;i++)tick()},
+    val:id=>{const v=nv[root[id]];return v===undefined?Z:v},
+    get power(){return power},get pulse(){return pulse},ic,sw,
+    get diag(){return diag},
+    powered:n=>enabled(n),icBad:n=>!!bad[n],
+    ffState:(n,k)=>({...ff[n][k]}),
+    getWires:()=>wires,hasWire,canAddWire:(a,b)=>validWire(a,b)&&!hasWire(a,b),
+    addWire(a,b){if(!E.canAddWire(a,b))return false;wires.push([a,b]);resync();return true},
+    removeWire(i){if(i<0||i>=wires.length)return false;wires.splice(i,1);resync();return true},
+    setWires(w){wires=w.filter(([a,b])=>validWire(a,b)).map(x=>[x[0],x[1]]);resync()},
+    clearWires(){wires=[];resync()},
+    setIC(n,on){ic[n]=on?1:0;resync()},
+    setSwitch(i,v){sw[i]=v?1:0;settle()},
+    setPulse(v){v=v?1:0;if(v===pulse)return;pulse=v;settle()},
+    setPower(p){p=p?1:0;if(p===power)return;power=p;resetClock();resync()},
+    clearState(){for(const r of ff)for(let k=0;k<2;k++)r[k]=newFF();resetClock();resync()},
+    reset(){wires=[];ic.fill(1);sw.fill(0);power=1;pulse=0;resetClock();for(const r of ff)for(let k=0;k<2;k++)r[k]=newFF();resync()},
+    getConfig:()=>({w:wires.map(x=>x.slice()),i:ic.slice(),s:sw.slice()}),
+    setConfig(c){wires=(c.w||[]).filter(([a,b])=>validWire(a,b)).map(x=>[x[0],x[1]]);for(let n=0;n<NIC;n++)ic[n]=c.i[n]?1:0;for(let i=0;i<16;i++)sw[i]=c.s[i]?1:0;resync()},
+    dump:()=>({wires:wires.map(x=>x.slice()),ic:ic.slice(),sw:sw.slice(),power,pulse,tc,clk:{...clv},ff:ff.map(r=>r.map(s=>({q:s.q,inv:s.inv,au:s.au})))})
+  };
+  resync();return E;
+}
+/* Undo/redo of editable configuration (wires, IC insertion, input switches). Never records clock events. */
+function createHistory(E,onChange){
+  const U=[],R=[],CAP=200;
+  return{
+    snap(){U.push(E.getConfig());if(U.length>CAP)U.shift();R.length=0},
+    undo(){if(!U.length)return false;R.push(E.getConfig());E.setConfig(U.pop());onChange&&onChange();return true},
+    redo(){if(!R.length)return false;U.push(E.getConfig());E.setConfig(R.pop());onChange&&onChange();return true},
+    clear(){U.length=R.length=0},depth:()=>[U.length,R.length]
+  };
+}
+</script>
+<script id="selftests">
+/* =====================================================================
+   ENGINE SELF-TESTS  (run in Node via run_tests.js, or in the page with #selftest)
+   ===================================================================== */
+function runSelfTests(){
+  const R=[],{LOW:L,HIGH:H,FLT:Z,UNK:X}=SIG;
+  const eq=(a,b,m)=>{if(a!==b)throw new Error((m?m+': ':'')+`expected ${b}, got ${a}`)};
+  const ok=(c,m)=>{if(!c)throw new Error(m||'assertion failed')};
+  const test=(name,fn)=>{try{fn();R.push({name,ok:true})}catch(e){R.push({name,ok:false,detail:e.message})}};
+  const W=(E,a,b)=>ok(E.addWire(a,b),`wire ${a}-${b} rejected`);
+  const P=(n,k,key)=>pinId(n,FP[k][key]);
+  /* single flip-flop rig (IC1/FF1): CLK=sw0 J=sw1 K=sw2 PRE=sw3 CLR=sw4, both async inactive */
+  function rig(){const E=createEngine();
+    W(E,'vcc',pinId(0,5));W(E,'gnd',pinId(0,13));
+    W(E,'i0',P(0,0,'clk'));W(E,'i1',P(0,0,'j'));W(E,'i2',P(0,0,'k'));W(E,'i3',P(0,0,'pre'));W(E,'i4',P(0,0,'clr'));
+    E.setSwitch(3,1);E.setSwitch(4,1);return E}
+  const clk=E=>{E.setSwitch(0,1);E.setSwitch(0,0)};            // one full pulse; active edge is the HIGH→LOW part
+  const Q=E=>E.val(P(0,0,'q')),QB=E=>E.val(P(0,0,'qb'));
+  const setJK=(E,j,k)=>{E.setSwitch(1,j);E.setSwitch(2,k)};
+  const rec=(E,pins,ticks)=>{const seq=[];let last=-1;for(let t=0;t<=ticks;t++){
+      ok(!pins.some(p=>E.val(p)>H),'output not a valid logic level at tick '+t);
+      const s=pins.reduce((a,p,i)=>a|(E.val(p)===H?1<<i:0),0);if(s!==last){seq.push(s);last=s}if(t<ticks)E.tick()}return seq};
+  function mod8(order){const E=createEngine();
+    const steps={
+      power:()=>{W(E,'vcc',pinId(0,5));W(E,'gnd',pinId(0,13));W(E,'vcc',pinId(1,5));W(E,'gnd',pinId(1,13))},
+      jk:()=>{[[0,0],[0,1],[1,0]].forEach(([n,k])=>{W(E,'hi',P(n,k,'j'));W(E,'hi',P(n,k,'k'))})},
+      async:()=>{[[0,0],[0,1],[1,0]].forEach(([n,k])=>{W(E,'hi',P(n,k,'pre'));W(E,'hi',P(n,k,'clr'))})},
+      casc:()=>{W(E,P(0,0,'q'),P(0,1,'clk'));W(E,P(0,1,'q'),P(1,0,'clk'))},
+      out:()=>{W(E,P(0,0,'q'),'o0');W(E,P(0,1,'q'),'o1');W(E,P(1,0,'q'),'o2')},
+      clock:()=>W(E,'k10',P(0,0,'clk'))};
+    (order||['power','jk','async','casc','out','clock']).forEach(s=>steps[s]());return E}
+
+  test('A: J=K=HIGH toggles exactly once per HIGH→LOW edge',()=>{const E=rig();setJK(E,1,1);
+    eq(Q(E),0,'initial Q');E.setSwitch(0,1);eq(Q(E),0,'rising edge must not toggle');E.setSwitch(0,0);eq(Q(E),1,'after falling edge');eq(QB(E),0,'Q̄');
+    for(let i=0;i<10;i++)E.advance(0.3);eq(Q(E),1,'no extra toggles while clock stays LOW');
+    clk(E);eq(Q(E),0,'second pulse');clk(E);eq(Q(E),1,'third pulse')});
+  test('B: J=K=LOW holds previous state (both 0 and 1)',()=>{const E=rig();setJK(E,1,0);clk(E);eq(Q(E),1);setJK(E,0,0);clk(E);clk(E);eq(Q(E),1,'hold 1');
+    setJK(E,0,1);clk(E);eq(Q(E),0);setJK(E,0,0);clk(E);clk(E);eq(Q(E),0,'hold 0')});
+  test('C: J=1,K=0 sets Q',()=>{const E=rig();setJK(E,1,0);clk(E);eq(Q(E),1);eq(QB(E),0);clk(E);eq(Q(E),1,'stays set')});
+  test('D: J=0,K=1 resets Q',()=>{const E=rig();setJK(E,1,0);clk(E);eq(Q(E),1);setJK(E,0,1);clk(E);eq(Q(E),0);eq(QB(E),1)});
+  test('E: asynchronous preset sets Q without a clock',()=>{const E=rig();setJK(E,0,1);eq(Q(E),0);E.setSwitch(3,0);eq(Q(E),1,'PRE low');eq(QB(E),0);
+    clk(E);eq(Q(E),1,'PRE overrides clocked reset');E.setSwitch(3,1);eq(Q(E),1,'stays after release')});
+  test('F: asynchronous clear resets Q without a clock',()=>{const E=rig();setJK(E,1,0);clk(E);eq(Q(E),1);E.setSwitch(4,0);eq(Q(E),0,'CLR low');eq(QB(E),1);
+    clk(E);eq(Q(E),0,'CLR overrides clocked set');E.setSwitch(4,1);eq(Q(E),0)});
+  test('G: PRE=CLR=LOW is flagged INVALID (Q=Q̄=HIGH), release leaves state UNKNOWN',()=>{const E=createEngine();
+    W(E,'vcc',pinId(0,5));W(E,'gnd',pinId(0,13));W(E,'i3',P(0,0,'pre'));W(E,'i3',P(0,0,'clr'));W(E,'hi',P(0,0,'j'));W(E,'hi',P(0,0,'k'));W(E,'hi',P(0,0,'clk'));
+    E.setSwitch(3,0);ok(E.ffState(0,0).inv,'inv flag');eq(Q(E),H,'Q');eq(QB(E),H,'Q̄');ok(E.diag.some(d=>/INVALID/.test(d.msg)),'warning shown');
+    E.setSwitch(3,1);ok(!E.ffState(0,0).inv,'flag cleared');eq(Q(E),X,'simultaneous release → Q unknown');ok(E.diag.some(d=>/UNKNOWN/.test(d.msg)),'unknown warning');
+    const F=rig();F.setSwitch(3,0);F.setSwitch(4,0);ok(F.ffState(0,0).inv,'inv');F.setSwitch(3,1);eq(Q(F),0,'PRE released first → CLR wins deterministically');ok(!F.ffState(0,0).inv)});
+  test('H: demo counter counts 00→01→10→11→00 from real clock events',()=>{const E=createEngine();E.setConfig(demoConfig());E.clearState();
+    const seq=rec(E,['o0','o1'],130);eq(JSON.stringify(seq.slice(0,6)),JSON.stringify([0,1,2,3,0,1]),'sequence');
+    ok(seq.every((v,i)=>v===i%4),'every transition is +1 (no glitch/skip)');
+    ok(E.getWires().some(([a,b])=>a==='c0p15'&&b==='c0p6'),'FF1 Q (pin 15) clocks FF2 (pin 6)')});
+  test('I: manually wired MOD-8 counts 000→…→111→000',()=>{const E=mod8();const seq=rec(E,['o0','o1','o2'],70);
+    ok(seq.length>=17,'enough transitions: '+seq.length);ok(seq.every((v,i)=>v===i%8),'sequence '+seq.join(','));
+    /* rebuild manually in a different order and after removing wires */
+    const E2=mod8(['async','jk','casc','out','power','clock']);const s2=rec(E2,['o0','o1','o2'],40);ok(s2.every((v,i)=>v===i%8),'alt order '+s2.join(','));
+    E2.clearWires();eq(E2.val('o0'),Z,'cleared circuit floats');
+    const E3=mod8();E3.removeWire(E3.getWires().length-1);const before=rec(E3,['o0','o1','o2'],30);eq(before.length,1,'no clock → no counting');
+    E3.addWire('k10',P(0,0,'clk'));const s3=rec(E3,['o0','o1','o2'],30);ok(s3.length>3&&s3.every((v,i)=>(v-s3[0]+8)%8===i%8),'resumes counting '+s3.join(','))});
+  test('J: removing clock / power produces no unexplained counting',()=>{
+    let E=mod8();E.tick(10);const c=E.getWires().findIndex(([a,b])=>a==='k10');E.removeWire(c);const s0=E.dump().ff;E.tick(200);eq(JSON.stringify(E.dump().ff),JSON.stringify(s0),'clock removed');
+    E=mod8();E.tick(10);E.removeWire(E.getWires().findIndex(([a,b])=>a==='vcc'&&b===pinId(0,5)));eq(E.val('o0'),Z,'unpowered IC1 outputs float');
+    ok(E.diag.some(d=>/IC1: VCC/.test(d.msg)),'power warning');const t=E.dump().ff;E.tick(200);eq(JSON.stringify(E.dump().ff),JSON.stringify(t),'unpowered stays dead');
+    E=mod8();E.tick(6);E.setPower(0);eq(E.val('o0'),Z,'power off → floating');eq(E.dump().tc,0,'clock reset');ok(E.advance(5)===0,'no clock while off');
+    E.setPower(1);eq(E.val('o0'),L,'power on → Q=0, no spurious edge');eq(E.val('o1'),L);eq(E.val('o2'),L);
+    const s=rec(E,['o0','o1','o2'],20);ok(s.every((v,i)=>v===i%8),'restarts from 000: '+s.join(','))});
+  test('K: HIGH and LOW on one net → visible conflict, net UNKNOWN (no AND)',()=>{const E=createEngine();W(E,'hi','lo');
+    ok(E.diag.some(d=>d.sev==='err'&&/conflict/i.test(d.msg)),'conflict warning');eq(E.val('hi'),X);eq(E.val('lo'),X);
+    const F=createEngine();W(F,'hi','i0');F.setSwitch(0,0);ok(F.diag.some(d=>/conflict/i.test(d.msg)),'switch vs HIGH');F.setSwitch(0,1);ok(!F.diag.some(d=>/conflict/i.test(d.msg)),'agreeing sources are fine')});
+  test('L: Reset restores the documented default state',()=>{const E=mod8();E.tick(11);E.setSwitch(5,1);E.setPulse(1);E.setIC(2,0);E.setPower(0);E.setPower(1);E.reset();
+    eq(JSON.stringify(E.dump()),JSON.stringify(createEngine().dump()),'state equals fresh engine');eq(E.getWires().length,0);ok(E.ic.every(x=>x===1));ok(E.sw.every(x=>x===0));eq(E.power,1);eq(E.pulse,0);eq(E.diag.length,0,'no warnings')});
+  test('M: undo/redo restore wires, IC insertion and switches',()=>{const E=createEngine(),Hs=createHistory(E);
+    const c0=JSON.stringify(E.getConfig());Hs.snap();W(E,'vcc',pinId(0,5));const c1=JSON.stringify(E.getConfig());
+    Hs.snap();E.setIC(3,0);const c2=JSON.stringify(E.getConfig());Hs.snap();E.setSwitch(7,1);const c3=JSON.stringify(E.getConfig());
+    Hs.undo();eq(JSON.stringify(E.getConfig()),c2);Hs.undo();eq(JSON.stringify(E.getConfig()),c1);Hs.undo();eq(JSON.stringify(E.getConfig()),c0);ok(!Hs.undo(),'nothing left');
+    Hs.redo();eq(JSON.stringify(E.getConfig()),c1);Hs.redo();Hs.redo();eq(JSON.stringify(E.getConfig()),c3);ok(!Hs.redo());
+    Hs.undo();Hs.snap();E.setSwitch(8,1);ok(!Hs.redo(),'new edit clears redo');
+    E.tick(50);eq(Hs.depth()[0]>0,true);const d=Hs.depth()[0];E.tick(500);eq(Hs.depth()[0],d,'clock events are not recorded')});
+  test('Clock: 10/5/1/0.5 Hz frequencies are exact over 20 s',()=>{const E=createEngine(),cnt={k10:0,k5:0,k1:0,k05:0},last={k10:1,k5:1,k1:1,k05:1};
+    for(let t=0;t<400;t++){E.tick();for(const k in cnt){const v=E.val(k);if(last[k]===1&&v===0)cnt[k]++;last[k]=v}}
+    eq(cnt.k10,200,'10 Hz');eq(cnt.k5,100,'5 Hz');eq(cnt.k1,20,'1 Hz');eq(cnt.k05,10,'0.5 Hz')});
+  test('Clock: result independent of frame rate / dt chunking',()=>{const run=dt=>{const E=mod8();let t=0;while(t<12.01-1e-9){const st=Math.min(dt,12.01-t);E.advance(st);t+=st}return JSON.stringify(E.dump().ff)+E.dump().tc};
+    const a=run(0.016),b=run(0.0333),c=run(0.25),d=run(0.5);eq(b,a,'30fps vs 60fps');eq(c,a,'4fps');eq(d,a,'2fps')});
+  test('Clock: swapping clock source creates no edge',()=>{const E=createEngine();W(E,'vcc',pinId(0,5));W(E,'gnd',pinId(0,13));
+    ['j','k','pre','clr'].forEach(x=>W(E,'hi',P(0,0,x)));W(E,'k1',P(0,0,'clk'));E.tick(1);eq(E.val('k10'),L);eq(E.val('k1'),H);
+    const q0=Q(E);E.removeWire(E.getWires().length-1);W(E,'k10',P(0,0,'clk'));eq(Q(E),q0,'H→L due to rewiring must not clock')});
+  test('Pulse: manual pulse toggles once on release',()=>{const E=createEngine();W(E,'vcc',pinId(0,5));W(E,'gnd',pinId(0,13));
+    ['j','k','pre','clr'].forEach(x=>W(E,'hi',P(0,0,x)));W(E,'pulse',P(0,0,'clk'));eq(Q(E),0);E.setPulse(1);eq(Q(E),0);E.setPulse(1);E.setPulse(0);eq(Q(E),1);E.tick(40);eq(Q(E),1)});
+  test('Floating inputs are not assumed HIGH',()=>{let E=createEngine();W(E,'vcc',pinId(0,5));W(E,'gnd',pinId(0,13));['pre','clr'].forEach(x=>W(E,'hi',P(0,0,x)));W(E,'i0',P(0,0,'clk'));W(E,'o0',P(0,0,'j'));
+    ok(E.val(P(0,0,'k'))===Z,'K reads FLOATING');W(E,'hi',P(0,0,'k'));E.removeWire(E.getWires().length-1); // K tied then J floating (o0 net is undriven)
+    E.setSwitch(0,1);E.setSwitch(0,0);eq(Q(E),X,'edge with floating J → Q unknown');ok(E.diag.some(d=>/J \(pin 4\) is floating/.test(d.msg)||/state is UNKNOWN/.test(d.msg)));
+    E=createEngine();W(E,'vcc',pinId(0,5));W(E,'gnd',pinId(0,13));W(E,'hi',P(0,0,'clr'));W(E,'i0',P(0,0,'clk'));eq(Q(E),X,'PRE floating → outputs unknown');ok(E.diag.some(d=>/PRE \(pin 2\) is floating/.test(d.msg)));
+    W(E,'hi',P(0,0,'pre'));eq(Q(E),0,'defined once tied')});
+  test('Power model: VCC/GND validation, short circuit, IC removal',()=>{let E=createEngine();W(E,'hi',pinId(0,5));W(E,'gnd',pinId(0,13));W(E,'hi',P(0,0,'pre'));W(E,'hi',P(0,0,'clr'));
+    ok(!E.powered(0),'VCC from HIGH source is not the rail');ok(E.diag.some(d=>/VCC \(pin 5\)/.test(d.msg)));eq(Q(E),Z,'unpowered output floats');
+    E=createEngine();W(E,'vcc',pinId(0,5));W(E,'vcc',pinId(0,13));ok(!E.powered(0),'GND pin on VCC');ok(E.diag.some(d=>/GND \(pin 13\)/.test(d.msg)||/Short/.test(d.msg)));
+    E=createEngine();W(E,'vcc',pinId(0,5));W(E,'gnd',pinId(0,13));ok(E.powered(0));W(E,'vcc','gnd');ok(!E.powered(0),'VCC–GND short');ok(E.diag.some(d=>/Short circuit/.test(d.msg)));
+    E=mod8();E.setIC(0,0);eq(E.val('o0'),Z,'removed IC floats');E.setIC(0,1);eq(E.val('o0'),L,'reinserted IC powers up at Q=0')});
+  test('Engine: feedback loop settles / terminates',()=>{const E=createEngine();W(E,'vcc',pinId(0,5));W(E,'gnd',pinId(0,13));['j','k','pre','clr'].forEach(x=>W(E,'hi',P(0,0,x)));
+    W(E,P(0,0,'qb'),P(0,0,'clk'));E.tick(100);ok(E.val(P(0,0,'q'))<=H,'valid level');W(E,P(0,0,'q'),P(0,0,'qb'));ok(E.diag.some(d=>/conflict/i.test(d.msg)),'Q tied to Q̄ is a conflict')});
+  test('7-seg: all 16 hex patterns, undefined input not shown as a number',()=>{const E=createEngine();
+    const std=['abcdef','bc','abdeg','abcdg','bcfg','acdfg','acdefg','abc','abcdefg','abcdfg','abcefg','cdefg','adef','bcdeg','adefg','aefg'];
+    ['a','b','c','d'].forEach((l,i)=>W(E,'i'+i,'d0'+l));
+    for(let v=0;v<16;v++){for(let b=0;b<4;b++)E.setSwitch(b,(v>>b)&1);const r=decodeHex(['d','c','b','a'].map(l=>E.val('d0'+l)));eq(r.mode,'ok');eq(r.seg,std[v],'digit '+v.toString(16))}
+    eq(decodeHex(['d','c','b','a'].map(l=>E.val('d1'+l))).mode,'blank','unwired display is blank');
+    E.setPower(0);eq(decodeHex(['d','c','b','a'].map(l=>E.val('d0'+l))).mode,'blank','power off → blank');E.setPower(1);
+    const F=createEngine();W(F,'hi','d0a');const r=decodeHex(['d','c','b','a'].map(l=>F.val('d0'+l)));eq(r.mode,'undef','partly floating');eq(r.seg,'g','shows dash only')});
+  return R;
+}
+</script>
+<script id="ui">
+const $=s=>document.querySelector(s),NS='http://www.w3.org/2000/svg',svg=$('#kit'),cv=$('#cv');
+const el=(t,a,p)=>{const e=document.createElementNS(NS,t);for(const k in a)e.setAttribute(k,a[k]);p&&p.appendChild(e);return e};
+const W=1440,H=700,BL='#0ba3da',CX=[168,440,712,984,1256];
+const NM=PINNAME;
+const gB=el('g',{},svg),gI=el('g',{},svg),gW=el('g',{},svg),gT=el('g',{},svg),gP=el('g',{},svg);
+const T={},LED=[],SEG=[[],[]],ICV=[],SWK=[];
+const E=createEngine();
+function tx(x,y,s,o={}){const t=el('text',{x,y,'text-anchor':o.a||'middle','font-size':o.s||10,'font-weight':o.w||600,fill:o.f||'#fff','font-family':'system-ui,sans-serif','letter-spacing':o.l||0,...(o.r?{transform:`rotate(90 ${x} ${y})`}:{})},o.g||gB);t.textContent=s;return t}
+function term(id,x,y,dx,dy,g){const c=el('circle',{cx:x,cy:y,r:7,fill:'#111',stroke:'#e5e7eb','stroke-width':1.5,'data-t':id,style:'cursor:crosshair'},gT);T[id]={x,y,dx,dy,c}}
+// panels
+[[0,92],[100,445],[553,147]].forEach(([y,h])=>el('rect',{x:0,y,width:W,height:h,rx:6,fill:BL},gB));
+tx(364,14,'OUTPUT SECTION',{s:12,l:1.5});tx(364,692,'INPUT SECTION',{s:12,l:1.5});tx(1180,692,'CLOCK SECTION',{s:12,l:1.5});
+tx(1405,300,'Virtual trainer kit',{s:11,f:'#ffffffb0',r:1,g:gB});
+for(let i=0;i<16;i++){const x=38+(15-i)*43.5;
+ tx(x,30,i,{s:10});LED[i]=el('circle',{cx:x,cy:47,r:6,fill:'#06293f',stroke:'#fff3','stroke-width':1},gB);term('o'+i,x,74,0,1);
+ tx(x,652,i,{s:10});term('i'+i,x,582,0,-1);
+ el('rect',{x:x-7,y:596,width:14,height:34,rx:7,fill:'#06293f'},gB);
+ SWK[i]=el('circle',{cx:x,cy:623,r:6.5,fill:'#fff'},gB);
+ el('rect',{x:x-12,y:592,width:24,height:42,fill:'transparent','data-sw':i,style:'cursor:pointer'},gB)}
+tx(772,30,'VCC');term('vcc',772,74,0,1);tx(772,606,'GND',{s:9});term('gnd',772,582,0,-1);
+[['k10',1030,'10'],['k5',1074,'5'],['k1',1118,'1'],['k05',1162,'0.5']].forEach(([id,x,l])=>{term(id,x,582,0,-1);tx(x,652,l,{s:10});});
+tx(1096,606,'Hz',{s:9,f:'#ffffffb0'});
+[['hi',1250,'HIGH'],['lo',1295,'LOW'],['pulse',1340,'PULSE']].forEach(([id,x,l])=>{term(id,x,582,0,-1);tx(x,606,l,{s:8})});
+el('rect',{x:1225,y:620,width:200,height:30,rx:4,fill:'#161616','data-pulse':1,style:'cursor:pointer'},gB);tx(1325,640,'GENERATE PULSE',{s:10,l:1,g:gB}).setAttribute('pointer-events','none');
+// 7-seg: each module has a built-in hexadecimal segment decoder (4-bit D C B A input, D = MSB). It is NOT a BCD-to-7-segment IC.
+const G={a:[14,12,36,6],g:[14,35,36,6],d:[14,58,36,6],f:[8,18,6,17],b:[50,18,6,17],e:[8,41,6,17],c:[50,41,6,17]};
+[1130,1210].forEach((ox,d)=>{el('rect',{x:ox,y:8,width:64,height:60,rx:7,fill:'#0d1218'},gB);
+ for(const k in G)SEG[d][k]=el('rect',{x:ox+G[k][0],y:G[k][1],width:G[k][2],height:G[k][3],rx:2,fill:'#2a2f2a'},gB);
+ ['d','c','b','a'].forEach((l,k)=>{term(`d${d}${l}`,ox+9+k*16,78,0,1);tx(ox+9+k*16,90,l.toUpperCase(),{s:7})})});
+tx(1000,24,'HEX 7-SEGMENT DISPLAYS',{s:9,l:1,f:'#ffffffd0'});
+tx(1000,38,'built-in hex decoder (not a BCD IC)',{s:8,f:'#ffffffa0'});
+tx(1000,50,'4-bit input D C B A → 0-F',{s:8,f:'#ffffffa0'});
+tx(1000,62,'floating/unknown input → dash',{s:8,f:'#ffffffa0'});
+tx(1385,26,'Power',{s:8});
+const pr=el('circle',{cx:1385,cy:55,r:15,fill:'#1b1f27',stroke:'#fff','stroke-width':3,'data-power':1,style:'cursor:pointer'},gB);
+tx(1385,60,'⏻',{s:15,g:gB}).setAttribute('pointer-events','none');
+// ICs
+CX.forEach((cx,n)=>{const g=el('g',{'data-base':n},gI),v=ICV[n]={};
+ v.body=el('rect',{x:cx-32,y:222,width:64,height:200,rx:4},g);
+ el('path',{d:`M${cx-9} 222a9 9 0 0 0 18 0`,fill:'#0008'},g);
+ v.dot=el('circle',{cx,cy:238,r:3.5},g);
+ v.base=tx(cx,322,`IC BASE ${n+1}`,{s:11,l:5,r:1,g,f:'#fff'});
+ v.chip=tx(cx-6,322,'74LS76',{s:13,l:4,r:1,g});v.sub=tx(cx+13,322,'DUAL JK FLIP-FLOP',{s:8,l:2,r:1,g,f:'#ffffffa0'});v.nm=[];
+ for(let k=0;k<8;k++){const y=238+k*24;
+  [[k+1,cx-1,-1],[16-k,cx+1,1]].forEach(([p,_,s])=>{
+   el('rect',{x:s<0?cx-54:cx+32,y:y-4,width:22,height:8,rx:2,fill:'#9aa3ad'},g);
+   term(pinId(n,p),cx+s*58,y,s,0);
+   v.nm.push(tx(cx+s*70,y+3,s<0?`${p} ${NM[p]}`:`${NM[p]} ${p}`,{s:9,a:s<0?'end':'start',g,f:'#fff'}))})}});
+// ---- editor state (everything electrical lives in the engine E) ----
+let pend=null,tool='select',z=.75,testMode=false;
+const hist=createHistory(E,()=>{pend=null;gP.textContent='';rw()});
+const COL=['#ef4444','#f59e0b','#22c55e','#a855f7','#ec4899','#facc15','#fff','#14b8a6'];
+function pth(a,b){const A=T[a],B=T[b],d=Math.min(120,40+Math.hypot(A.x-B.x,A.y-B.y)*.2);return`M${A.x} ${A.y}C${A.x+A.dx*d} ${A.y+A.dy*d} ${B.x+B.dx*d} ${B.y+B.dy*d} ${B.x} ${B.y}`}
+function rw(){gW.textContent='';E.getWires().forEach(([a,b],i)=>{const d=pth(a,b);
+ el('path',{d,fill:'none',stroke:'#0006','stroke-width':6.5,'stroke-linecap':'round',transform:'translate(1.5 2)','pointer-events':'none'},gW);
+ el('path',{d,fill:'none',stroke:COL[i%COL.length],'stroke-width':3.6,'stroke-linecap':'round','pointer-events':'none'},gW);
+ el('path',{d,fill:'none',stroke:'transparent','stroke-width':14,'data-w':i,'pointer-events':'stroke'},gW)})}
+// ---- rendering from simulated signal levels: 0 LOW, 1 HIGH, 2 FLOATING, 3 UNKNOWN/CONFLICT ----
+const TC=['#94a3b8','#22c55e','#111','#f97316'],LC=['#06293f','#ff3b3b','#06293f','#f59e0b'],LEDC=[];
+function draw(){
+ for(const id in T){const o=T[id],f=TC[E.val(id)];if(o.f!==f){o.f=f;o.c.setAttribute('fill',f)}
+  const pd=id===pend;if(o.p!==pd){o.p=pd;o.c.setAttribute('stroke',pd?'#facc15':'#e5e7eb');o.c.setAttribute('stroke-width',pd?3.5:1.5)}}
+ for(let i=0;i<16;i++){const v=E.val('o'+i);
+  if(LEDC[i]!==v){LEDC[i]=v;LED[i].setAttribute('fill',LC[v]);LED[i].style.filter=v===1?'drop-shadow(0 0 6px #ff3b3b)':v===3?'drop-shadow(0 0 6px #f59e0b)':'none';
+   LED[i].setAttribute('stroke',v===2?'#ffffffa0':'#fff3');LED[i].setAttribute('stroke-dasharray',v===2?'2 2':'none')}
+  SWK[i].setAttribute('cy',E.sw[i]?603:623);SWK[i].setAttribute('fill',E.sw[i]&&E.power?'#22c55e':'#fff')}
+ [0,1].forEach(d=>{const r=decodeHex(['d','c','b','a'].map(l=>E.val(`d${d}${l}`))),c=r.mode==='undef'?'#f59e0b':'#ff3b3b';
+  for(const k in SEG[d])SEG[d][k].setAttribute('fill',r.seg.includes(k)?c:'#2a2f2a')});
+ pr.setAttribute('stroke',E.power?'#22c55e':'#fff');
+ ICV.forEach((v,n)=>{const on=E.ic[n],bad=on&&E.icBad(n);v.body.setAttribute('fill',on?'#141414':'#2f3b4a');
+  v.body.setAttribute('stroke',bad?'#f97316':'none');v.body.setAttribute('stroke-width',bad?3:0);
+  v.base.style.display=on?'none':'';v.chip.style.display=v.sub.style.display=on?'':'none';
+  v.nm.forEach(t=>t.style.display=on?'':'none');v.dot.setAttribute('fill',on&&E.powered(n)?'#22c55e':bad?'#f97316':'#333')})}
+let lastD='';
+function showDiag(){const d=E.diag,s=JSON.stringify(d);if(s===lastD)return;lastD=s;const box=$('#warn');box.textContent='';
+ if(!d.length){box.style.display='none';return}
+ box.style.display='flex';const ic={err:'⛔ ',warn:'⚠ ',info:'ℹ '},cl={err:'#ef4444',warn:'#d97706',info:'var(--mu)'};
+ d.slice(0,4).forEach(x=>{const r=document.createElement('div');r.textContent=ic[x.sev]+x.msg;r.style.color=cl[x.sev];box.appendChild(r)});
+ if(d.length>4){const r=document.createElement('div');r.textContent=`…and ${d.length-4} more`;r.style.color='var(--mu)';box.appendChild(r)}}
+// simulation clock: advances by real elapsed time in fixed 50 ms ticks (edges never depend on frame rate); paused while the tab is hidden
+let last=performance.now();
+document.addEventListener('visibilitychange',()=>{last=performance.now()});
+(function loop(){const t=performance.now();E.advance((t-last)/1000);last=t;draw();if(!testMode)showDiag();requestAnimationFrame(loop)})();
+// history & circuit commands
+$('#undo').onclick=()=>hist.undo();
+$('#redo').onclick=()=>hist.redo();
+$('#clr').onclick=()=>{hist.snap();E.clearWires();pend=null;gP.textContent='';rw()};          // Clear Circuit: wires only
+$('#reset').onclick=()=>{hist.snap();E.reset();pend=null;gP.textContent='';rw()};              // Reset Simulator: full default state
+$('#demo').onclick=()=>{hist.snap();E.setPower(1);E.setConfig(demoConfig());E.clearState();pend=null;gP.textContent='';rw()};
+// tools & zoom
+document.querySelectorAll('[data-tool]').forEach(b=>b.onclick=()=>{tool=b.dataset.tool;pend=null;gP.textContent='';document.querySelectorAll('[data-tool]').forEach(x=>x.classList.toggle('on',x===b));cv.style.cursor=tool==='hand'?'grab':''});
+function setZ(v){z=Math.max(.4,Math.min(1.6,v));svg.style.width=W*z+'px';svg.style.height=H*z+'px';$('#zl').textContent=Math.round(z*100)+'%'}
+$('#zm').onclick=()=>setZ(z-.1);$('#zp').onclick=()=>setZ(z+.1);
+setZ(Math.max(.5,Math.min(1,(innerWidth-150)/W)));
+// interaction
+const pt=e=>{const p=svg.createSVGPoint();p.x=e.clientX;p.y=e.clientY;return p.matrixTransform(svg.getScreenCTM().inverse())};
+svg.addEventListener('pointerdown',e=>{const q=s=>e.target.closest(s);
+ if(q('[data-power]')){E.setPower(E.power^1);return}
+ if(q('[data-pulse]')){E.setPulse(1);return}
+ if(tool==='ic'&&q('[data-base]')){const n=+q('[data-base]').dataset.base;hist.snap();E.setIC(n,!E.ic[n]);return}
+ if(tool==='del'&&q('[data-w]')){hist.snap();E.removeWire(+q('[data-w]').dataset.w);rw();return}
+ if(q('[data-sw]')){const i=+q('[data-sw]').dataset.sw;hist.snap();E.setSwitch(i,E.sw[i]^1);return}
+ if(tool!=='select')return;
+ const t=q('[data-t]');
+ if(t){const id=t.dataset.t;if(!pend){pend=id}else{if(E.canAddWire(pend,id)){hist.snap();E.addWire(pend,id);rw()}pend=null;gP.textContent=''}return}
+ pend=null;gP.textContent=''});
+svg.addEventListener('contextmenu',e=>{const w=e.target.closest('[data-w]');if(w){e.preventDefault();hist.snap();E.removeWire(+w.dataset.w);rw()}});
+let drag=null;
+cv.addEventListener('pointerdown',e=>{if(tool==='hand'){drag={x:e.clientX,y:e.clientY,l:cv.scrollLeft,t:cv.scrollTop};cv.style.cursor='grabbing'}});
+addEventListener('pointermove',e=>{
+ if(drag){cv.scrollLeft=drag.l-(e.clientX-drag.x);cv.scrollTop=drag.t-(e.clientY-drag.y)}
+ if(pend){const A=T[pend],m=pt(e);gP.textContent='';el('path',{d:`M${A.x} ${A.y}C${A.x+A.dx*60} ${A.y+A.dy*60} ${m.x} ${m.y} ${m.x} ${m.y}`,fill:'none',stroke:'#fff','stroke-width':3,'stroke-dasharray':'6 5','pointer-events':'none'},gP)}});
+const release=()=>{E.setPulse(0);drag=null;if(tool==='hand')cv.style.cursor='grab'};      // pulse can never stay stuck
+addEventListener('pointerup',release);addEventListener('pointercancel',release);addEventListener('blur',release);
+addEventListener('keydown',e=>{if(e.key==='Escape'){pend=null;gP.textContent=''}});
+rw();
+// open index.html#selftest to run the logic-engine self-tests in the browser
+if(location.hash==='#selftest'){testMode=true;const r=runSelfTests(),box=$('#warn');console.table(r);window.__selftest=r;
+ box.style.display='flex';box.textContent='';r.forEach(x=>{const d=document.createElement('div');d.textContent=(x.ok?'✔ ':'✘ ')+x.name+(x.ok?'':' → '+x.detail);d.style.color=x.ok?'#22c55e':'#ef4444';box.appendChild(d)})}
+</script>
+</body>
+</html>
